@@ -9,6 +9,9 @@ from pharo_smalltalk_interop_mcp_server.core import (
     PharoClient,
     get_pharo_client,
     interop_apply_settings,
+    interop_clear_transcript,
+    interop_compile_class,
+    interop_compile_method,
     interop_eval,
     interop_export_package,
     interop_get_class_comment,
@@ -16,12 +19,17 @@ from pharo_smalltalk_interop_mcp_server.core import (
     interop_get_method_source,
     interop_get_settings,
     interop_import_package,
+    interop_inspect_expression,
+    interop_inspect_ref,
     interop_install_project,
     interop_list_classes,
     interop_list_extended_classes,
     interop_list_methods,
     interop_list_packages,
+    interop_poll_transcript,
     interop_read_screen,
+    interop_remove_class,
+    interop_remove_method,
     interop_run_class_test,
     interop_run_package_test,
     interop_search_classes_like,
@@ -1356,3 +1364,199 @@ class TestEnhancedErrorHandling:
 
         expected = {"success": False, "error": "HTTP error 500: Internal Server Error"}
         assert result == expected
+
+
+class TestTranscriptInspectCompileTools:
+    """Tests for the Transcript / Inspector / Compile additions."""
+
+    @patch("pharo_smalltalk_interop_mcp_server.core.httpx.Client")
+    def test_poll_transcript_encodes_since_as_query(self, mock_client_class):
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.json.return_value = {"success": True, "result": {"seq": 7}}
+        mock_client.get.return_value = mock_response
+        mock_client_class.return_value = mock_client
+
+        client = PharoClient()
+        result = client.poll_transcript(since=42)
+
+        assert result == {"success": True, "result": {"seq": 7}}
+        mock_client.get.assert_called_once_with(
+            "http://localhost:8086/transcript/poll", params={"since": "42"}
+        )
+
+    @patch("pharo_smalltalk_interop_mcp_server.core.httpx.Client")
+    def test_clear_transcript_posts_with_no_body(self, mock_client_class):
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.json.return_value = {"success": True, "result": {"seq": 0}}
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value = mock_client
+
+        client = PharoClient()
+        result = client.clear_transcript()
+
+        assert result == {"success": True, "result": {"seq": 0}}
+        mock_client.post.assert_called_once_with(
+            "http://localhost:8086/transcript/clear", json=None
+        )
+
+    @patch("pharo_smalltalk_interop_mcp_server.core.httpx.Client")
+    def test_inspect_expression_posts_body(self, mock_client_class):
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "success": True,
+            "result": {"ref": 3, "class": "SmallInteger"},
+        }
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value = mock_client
+
+        client = PharoClient()
+        result = client.inspect_expression("42")
+
+        assert result["result"]["class"] == "SmallInteger"
+        mock_client.post.assert_called_once_with(
+            "http://localhost:8086/inspect/expression", json={"expression": "42"}
+        )
+
+    @patch("pharo_smalltalk_interop_mcp_server.core.httpx.Client")
+    def test_inspect_ref_coerces_to_int_string(self, mock_client_class):
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.json.return_value = {"success": True, "result": {}}
+        mock_client.get.return_value = mock_response
+        mock_client_class.return_value = mock_client
+
+        client = PharoClient()
+        client.inspect_ref(5)
+
+        mock_client.get.assert_called_once_with(
+            "http://localhost:8086/inspect/ref", params={"ref": "5"}
+        )
+
+    @patch("pharo_smalltalk_interop_mcp_server.core.httpx.Client")
+    def test_compile_method_payload_has_all_fields(self, mock_client_class):
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "success": True,
+            "result": {"selector": "sum"},
+        }
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value = mock_client
+
+        client = PharoClient()
+        client.compile_method(
+            "Demo", "sum\n\t^ 1 + 2", category="math", is_class_method=True
+        )
+
+        _, kwargs = mock_client.post.call_args
+        assert kwargs["json"] == {
+            "class_name": "Demo",
+            "method_source": "sum\n\t^ 1 + 2",
+            "is_class_method": True,
+            "category": "math",
+        }
+
+    @patch("pharo_smalltalk_interop_mcp_server.core.httpx.Client")
+    def test_compile_method_omits_category_when_none(self, mock_client_class):
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.json.return_value = {"success": True, "result": {}}
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value = mock_client
+
+        client = PharoClient()
+        client.compile_method("Demo", "x ^ 1")
+
+        _, kwargs = mock_client.post.call_args
+        assert "category" not in kwargs["json"]
+        assert kwargs["json"]["is_class_method"] is False
+
+    @patch("pharo_smalltalk_interop_mcp_server.core.httpx.Client")
+    def test_compile_class_sends_arrays_and_defaults(self, mock_client_class):
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "success": True,
+            "result": {"class_name": "Demo", "created": True},
+        }
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value = mock_client
+
+        client = PharoClient()
+        client.compile_class("Demo", package="Codex-Demo", inst_vars=["a", "b"])
+
+        _, kwargs = mock_client.post.call_args
+        body = kwargs["json"]
+        assert body["class_name"] == "Demo"
+        assert body["superclass"] == "Object"
+        assert body["package"] == "Codex-Demo"
+        assert body["inst_vars"] == ["a", "b"]
+        assert body["class_vars"] == []
+        assert body["class_inst_vars"] == []
+        assert "tag" not in body
+
+    @patch("pharo_smalltalk_interop_mcp_server.core.httpx.Client")
+    def test_remove_method_posts_structured_payload(self, mock_client_class):
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "success": True,
+            "result": {"removed": True},
+        }
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value = mock_client
+
+        client = PharoClient()
+        client.remove_method("Demo", "value", is_class_method=True)
+
+        _, kwargs = mock_client.post.call_args
+        assert kwargs["json"] == {
+            "class_name": "Demo",
+            "selector": "value",
+            "is_class_method": True,
+        }
+
+    @patch("pharo_smalltalk_interop_mcp_server.core.httpx.Client")
+    def test_remove_class_posts_structured_payload(self, mock_client_class):
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "success": True,
+            "result": {"removed": True},
+        }
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value = mock_client
+
+        client = PharoClient()
+        client.remove_class("Demo")
+
+        _, kwargs = mock_client.post.call_args
+        assert kwargs["json"] == {"class_name": "Demo"}
+
+    @patch("pharo_smalltalk_interop_mcp_server.core.httpx.Client")
+    def test_interop_wrappers_delegate_to_client(self, mock_client_class):
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.json.return_value = {"success": True, "result": {}}
+        mock_client.post.return_value = mock_response
+        mock_client.get.return_value = mock_response
+        mock_client_class.return_value = mock_client
+
+        # Reset the global client so it picks up our mock
+        import pharo_smalltalk_interop_mcp_server.core as core_mod
+
+        core_mod._pharo_client = None
+        try:
+            interop_poll_transcript(since=1)
+            interop_clear_transcript()
+            interop_inspect_expression("42")
+            interop_inspect_ref(7)
+            interop_compile_method("Demo", "m\n\t^ 1")
+            interop_compile_class("Demo", package="Codex-Demo")
+            interop_remove_method("Demo", "m")
+            interop_remove_class("Demo")
+        finally:
+            core_mod._pharo_client = None

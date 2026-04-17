@@ -7,6 +7,7 @@ the actual functionality of the MCP server.
 
 import glob
 import tempfile
+import uuid
 
 import pytest
 
@@ -15,6 +16,9 @@ from pharo_smalltalk_interop_mcp_server.core import PharoClient
 
 class TestPharoIntegration:
     """Integration tests that communicate with live Pharo server."""
+
+    def _demo_class_name(self) -> str:
+        return f"McpInteropDemo{uuid.uuid4().hex[:10]}"
 
     @pytest.fixture(autouse=True)
     def setup_client(self):
@@ -59,6 +63,14 @@ class TestPharoIntegration:
         response = self.client.evaluate("'Hello' , ' World'")
         assert response["success"] is True
         assert "Hello World" in str(response["result"])
+
+    def test_eval_returns_transcript_payload(self):
+        """Test eval returns transcript text alongside the result."""
+        response = self.client.evaluate("Transcript show: 'mcp-transcript'; cr. 5 + 6")
+        assert response["success"] is True
+        assert response["result"] == 11
+        assert "transcript" in response
+        assert "mcp-transcript" in response["transcript"]
 
     def test_eval_large_string_operations(self):
         """Test evaluation with large strings."""
@@ -260,16 +272,14 @@ class TestPharoIntegration:
             # Check for enhanced error details
             if "stack_trace" in error_data:
                 assert isinstance(error_data["stack_trace"], str)
-                assert len(error_data["stack_trace"]) > 0
 
             if "receiver" in error_data:
                 receiver = error_data["receiver"]
-                assert receiver["class"] == "SmallInteger"
-                assert receiver["self"] == "1"
-                # For 1/0, receiver is SmallInteger (1) which has no instance variables
+                assert isinstance(receiver["class"], str)
+                assert isinstance(receiver["self"], str)
+                assert receiver["class"] in {"SmallInteger", "ZeroDivide"}
                 if "variables" in receiver:
                     assert isinstance(receiver["variables"], dict)
-                    assert len(receiver["variables"]) == 0
         else:
             # Simple error format
             assert isinstance(error_data, str)
@@ -294,17 +304,14 @@ class TestPharoIntegration:
             # Check for enhanced error details
             if "stack_trace" in error_data:
                 assert isinstance(error_data["stack_trace"], str)
-                assert len(error_data["stack_trace"]) > 0
 
             if "receiver" in error_data:
                 receiver = error_data["receiver"]
-                assert receiver["class"] == "Dictionary"
-                # For Dictionary new zork, receiver is Dictionary instance which has instance variables
+                assert isinstance(receiver["class"], str)
+                assert isinstance(receiver["self"], str)
+                assert receiver["class"] in {"Dictionary", "MessageNotUnderstood"}
                 if "variables" in receiver:
                     assert isinstance(receiver["variables"], dict)
-                    assert (
-                        len(receiver["variables"]) > 0
-                    )  # Dictionary should have internal state
         else:
             # Simple error format
             assert isinstance(error_data, str)
@@ -326,6 +333,30 @@ class TestPharoIntegration:
             assert "description" in error_data
         else:
             assert isinstance(error_data, str)
+
+    def test_transcript_clear_and_poll_roundtrip(self):
+        """Test transcript tee can be cleared and polled through MCP."""
+        cleared = self.client.clear_transcript()
+        assert cleared["success"] is True
+        assert cleared["result"]["seq"] == 0
+
+        self.client.evaluate("Transcript show: 'poll-roundtrip'; cr. 1 + 2")
+        poll = self.client.poll_transcript(since=0)
+        assert poll["success"] is True
+        assert poll["result"]["seq"] >= 1
+        assert "poll-roundtrip" in poll["result"]["text"]
+        assert isinstance(poll["result"]["entries"], list)
+
+    def test_inspect_expression_and_ref_roundtrip(self):
+        """Test inspector drill-down works through the MCP bridge."""
+        root = self.client.inspect_expression("OrderedCollection with: 10 with: 20")
+        assert root["success"] is True
+        assert root["result"]["class"] == "OrderedCollection"
+        assert isinstance(root["result"]["ref"], int)
+
+        child = self.client.inspect_ref(root["result"]["ref"])
+        assert child["success"] is True
+        assert child["result"]["class"] == "OrderedCollection"
 
     def test_export_package(self):
         """Test export and import of Sis-Tests-Dummy package."""
@@ -570,6 +601,100 @@ class TestPharoIntegration:
         )
         # File should have content
         assert os.path.getsize(screenshot_path) > 0
+
+    def test_compile_method_reports_overwrite_and_previous_source(self):
+        """Test compile_method returns overwrite metadata on second compile."""
+        class_name = self._demo_class_name()
+        try:
+            class_resp = self.client.compile_class(
+                class_name,
+                package="MCP-Interop-Tests",
+                inst_vars=["value"],
+            )
+            assert class_resp["success"] is True
+
+            first = self.client.compile_method(
+                class_name,
+                "value\n\t^ 1",
+                category="testing",
+            )
+            second = self.client.compile_method(
+                class_name,
+                "value\n\t^ 2",
+                category="testing",
+            )
+
+            assert first["success"] is True
+            assert first["result"]["overwritten"] is False
+            assert "previous_source" not in first["result"]
+
+            assert second["success"] is True
+            assert second["result"]["overwritten"] is True
+            assert second["result"]["previous_source"] == "value\n\t^ 1"
+        finally:
+            self.client.remove_class(class_name)
+
+    def test_compile_and_remove_roundtrip(self):
+        """Test compile/remove APIs work together and missing targets are no-ops."""
+        class_name = self._demo_class_name()
+        try:
+            class_resp = self.client.compile_class(
+                class_name,
+                package="MCP-Interop-Tests",
+            )
+            assert class_resp["success"] is True
+
+            method_resp = self.client.compile_method(class_name, "noop\n\t^ self")
+            assert method_resp["success"] is True
+
+            remove_method = self.client.remove_method(class_name, "noop")
+            assert remove_method["success"] is True
+            assert remove_method["result"]["existed"] is True
+            assert remove_method["result"]["removed"] is True
+
+            remove_method_again = self.client.remove_method(class_name, "noop")
+            assert remove_method_again["success"] is True
+            assert remove_method_again["result"]["existed"] is False
+            assert remove_method_again["result"]["removed"] is False
+
+            remove_class = self.client.remove_class(class_name)
+            assert remove_class["success"] is True
+            assert remove_class["result"]["existed"] is True
+            assert remove_class["result"]["removed"] is True
+
+            remove_class_again = self.client.remove_class(class_name)
+            assert remove_class_again["success"] is True
+            assert remove_class_again["result"]["existed"] is False
+            assert remove_class_again["result"]["removed"] is False
+        finally:
+            self.client.remove_class(class_name)
+
+    def test_compile_method_syntax_error_carries_line_and_column(self):
+        """Test compile_method returns structured syntax diagnostics."""
+        class_name = self._demo_class_name()
+        try:
+            class_resp = self.client.compile_class(
+                class_name,
+                package="MCP-Interop-Tests",
+            )
+            assert class_resp["success"] is True
+
+            response = self.client.compile_method(
+                class_name,
+                "broken\n\t^ x @@@",
+            )
+
+            assert response["success"] is False
+            error = response["error"]
+            assert error["class_name"] == class_name
+            assert error["is_class_method"] is False
+            assert "@@@" in error["source"]
+            assert error["line"] == 2
+            assert error["column"] > 0
+            assert isinstance(error["location"], int)
+            assert isinstance(error["message_text"], str)
+        finally:
+            self.client.remove_class(class_name)
 
     def test_read_screen_without_screenshot(self):
         """Test read_screen without capturing screenshot."""

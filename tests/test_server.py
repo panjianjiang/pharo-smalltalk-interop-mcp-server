@@ -78,6 +78,38 @@ class TestMCPToolsIntegration:
             "TestProject", "http://github.com/test/repo"
         )
 
+    @patch("pharo_smalltalk_interop_mcp_server.core.interop_remove_method")
+    def test_remove_method_integration(self, mock_interop_remove_method):
+        """Test remove_method integration."""
+        mock_interop_remove_method.return_value = {
+            "success": True,
+            "result": {"removed": True},
+        }
+
+        from pharo_smalltalk_interop_mcp_server.core import interop_remove_method
+
+        result = interop_remove_method("Demo", "value", is_class_method=True)
+
+        assert result == {"success": True, "result": {"removed": True}}
+        mock_interop_remove_method.assert_called_once_with(
+            "Demo", "value", is_class_method=True
+        )
+
+    @patch("pharo_smalltalk_interop_mcp_server.core.interop_remove_class")
+    def test_remove_class_integration(self, mock_interop_remove_class):
+        """Test remove_class integration."""
+        mock_interop_remove_class.return_value = {
+            "success": True,
+            "result": {"removed": True},
+        }
+
+        from pharo_smalltalk_interop_mcp_server.core import interop_remove_class
+
+        result = interop_remove_class("Demo")
+
+        assert result == {"success": True, "result": {"removed": True}}
+        mock_interop_remove_class.assert_called_once_with("Demo")
+
     def test_server_main_function_exists(self):
         """Test that main function exists and is callable."""
         from pharo_smalltalk_interop_mcp_server.server import main

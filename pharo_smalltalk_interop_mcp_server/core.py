@@ -182,6 +182,112 @@ class PharoClient:
         data = {"settings": settings}
         return self._make_request("POST", "/apply-settings", data)
 
+    def poll_transcript(self, since: int = 0) -> dict[str, Any]:
+        """Return transcript entries recorded since the given sequence cursor.
+
+        Response shape:
+            {seq, text, dropped, entries}
+        where `seq` is the new cursor to pass in on the next poll,
+        `text` joins the new entries, and `dropped` reports how many
+        older entries were evicted from the ring buffer before the
+        cursor caught up.
+        """
+        data = {"since": str(since)}
+        return self._make_request("GET", "/transcript/poll", data)
+
+    def clear_transcript(self) -> dict[str, Any]:
+        """Reset the transcript ring buffer and sequence cursor."""
+        return self._make_request("POST", "/transcript/clear")
+
+    def inspect_expression(self, expression: str) -> dict[str, Any]:
+        """Evaluate `expression` and return the SisInspector tree of the result.
+
+        Each row in the tree carries an integer `ref' into a server-side
+        registry; pass it to `inspect_ref` to drill into that subobject
+        without re-evaluating anything.
+        """
+        data = {"expression": expression}
+        return self._make_request("POST", "/inspect/expression", data)
+
+    def inspect_ref(self, ref: int) -> dict[str, Any]:
+        """Look up the live object stored under `ref` and return its tree."""
+        data = {"ref": str(int(ref))}
+        return self._make_request("GET", "/inspect/ref", data)
+
+    def compile_method(
+        self,
+        class_name: str,
+        method_source: str,
+        category: str | None = None,
+        is_class_method: bool = False,
+    ) -> dict[str, Any]:
+        """Compile a method onto `class_name` (or its metaclass when
+        `is_class_method` is true). Returns `{selector, class_name,
+        is_class_method, category}`. The server handles Smalltalk
+        escaping — pass the source verbatim."""
+        data: dict[str, Any] = {
+            "class_name": class_name,
+            "method_source": method_source,
+            "is_class_method": is_class_method,
+        }
+        if category is not None:
+            data["category"] = category
+        return self._make_request("POST", "/compile-method", data)
+
+    def compile_class(
+        self,
+        class_name: str,
+        package: str,
+        superclass: str = "Object",
+        tag: str | None = None,
+        inst_vars: list[str] | None = None,
+        class_vars: list[str] | None = None,
+        class_inst_vars: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a class via ShiftClassBuilder. Returns
+        `{class_name, created}` where `created` is true on first
+        install, false on update."""
+        data: dict[str, Any] = {
+            "class_name": class_name,
+            "superclass": superclass,
+            "package": package,
+            "inst_vars": list(inst_vars or []),
+            "class_vars": list(class_vars or []),
+            "class_inst_vars": list(class_inst_vars or []),
+        }
+        if tag is not None:
+            data["tag"] = tag
+        return self._make_request("POST", "/compile-class", data)
+
+    def remove_method(
+        self,
+        class_name: str,
+        selector: str,
+        *,
+        is_class_method: bool = False,
+    ) -> dict[str, Any]:
+        """Remove a method from a class or its metaclass.
+
+        Returns `{class_name, selector, is_class_method, existed, removed}`.
+        Missing classes/selectors are reported as `existed=false` rather than
+        raising transport errors.
+        """
+        data = {
+            "class_name": class_name,
+            "selector": selector,
+            "is_class_method": is_class_method,
+        }
+        return self._make_request("POST", "/remove-method", data)
+
+    def remove_class(self, class_name: str) -> dict[str, Any]:
+        """Remove a class from the image.
+
+        Returns `{class_name, existed, removed}` with missing classes treated
+        as a no-op.
+        """
+        data = {"class_name": class_name}
+        return self._make_request("POST", "/remove-class", data)
+
     def close(self):
         """Close the HTTP client."""
         self.client.close()
@@ -346,3 +452,85 @@ def interop_apply_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Modify server configuration dynamically."""
     client = get_pharo_client()
     return client.apply_settings(settings)
+
+
+def interop_poll_transcript(since: int = 0) -> dict[str, Any]:
+    """Return transcript entries recorded since the given sequence cursor."""
+    client = get_pharo_client()
+    return client.poll_transcript(since)
+
+
+def interop_clear_transcript() -> dict[str, Any]:
+    """Reset the transcript ring buffer and sequence cursor."""
+    client = get_pharo_client()
+    return client.clear_transcript()
+
+
+def interop_inspect_expression(expression: str) -> dict[str, Any]:
+    """Inspect a live Smalltalk value and return a drill-down tree."""
+    client = get_pharo_client()
+    return client.inspect_expression(expression)
+
+
+def interop_inspect_ref(ref: int) -> dict[str, Any]:
+    """Drill into a previously-inspected object by its server-side ref."""
+    client = get_pharo_client()
+    return client.inspect_ref(ref)
+
+
+def interop_compile_method(
+    class_name: str,
+    method_source: str,
+    category: str | None = None,
+    is_class_method: bool = False,
+) -> dict[str, Any]:
+    """Compile a method onto a class (or its metaclass) without
+    Smalltalk-string escaping on the caller side."""
+    client = get_pharo_client()
+    return client.compile_method(
+        class_name,
+        method_source,
+        category=category,
+        is_class_method=is_class_method,
+    )
+
+
+def interop_compile_class(
+    class_name: str,
+    package: str,
+    superclass: str = "Object",
+    tag: str | None = None,
+    inst_vars: list[str] | None = None,
+    class_vars: list[str] | None = None,
+    class_inst_vars: list[str] | None = None,
+) -> dict[str, Any]:
+    """Create or update a class via ShiftClassBuilder."""
+    client = get_pharo_client()
+    return client.compile_class(
+        class_name,
+        package=package,
+        superclass=superclass,
+        tag=tag,
+        inst_vars=inst_vars,
+        class_vars=class_vars,
+        class_inst_vars=class_inst_vars,
+    )
+
+
+def interop_remove_method(
+    class_name: str,
+    selector: str,
+    *,
+    is_class_method: bool = False,
+) -> dict[str, Any]:
+    """Remove a method from a class or its metaclass."""
+    client = get_pharo_client()
+    return client.remove_method(
+        class_name, selector, is_class_method=is_class_method
+    )
+
+
+def interop_remove_class(class_name: str) -> dict[str, Any]:
+    """Remove a class from the image."""
+    client = get_pharo_client()
+    return client.remove_class(class_name)

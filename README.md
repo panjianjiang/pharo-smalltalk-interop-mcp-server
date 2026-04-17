@@ -144,11 +144,18 @@ claude mcp add -s user smalltalk-interop -- uv --directory /path/to/pharo-smallt
 
 ### MCP Tools Available
 
-This server provides 22 MCP tools that map to all [PharoSmalltalkInteropServer](https://github.com/mumez/PharoSmalltalkInteropServer/blob/main/spec/openapi.json) APIs:
+This server provides MCP tools that map to the current [PharoSmalltalkInteropServer](https://github.com/mumez/PharoSmalltalkInteropServer/blob/main/spec/openapi.json) APIs, including the extended transcript, compile, inspect, and remove endpoints:
 
 #### Code Evaluation
 
 - **`eval`**: Execute Smalltalk expressions and return results
+
+#### Live Transcript / Inspector
+
+- **`poll_transcript`**: Read transcript ring-buffer entries since a sequence cursor
+- **`clear_transcript`**: Reset the transcript ring buffer
+- **`inspect_expression`**: Evaluate an expression and return a drill-down inspector tree
+- **`inspect_ref`**: Drill into a previously inspected live object
 
 #### Code Introspection
 
@@ -182,6 +189,13 @@ This server provides 22 MCP tools that map to all [PharoSmalltalkInteropServer](
 
 - **`run_package_test`**: Run test suites for a package
 - **`run_class_test`**: Run test suites for a specific class
+
+#### Structured Compilation
+
+- **`compile_method`**: Compile a method with structured JSON payloads and syntax diagnostics
+- **`compile_class`**: Create or update a class via ShiftClassBuilder
+- **`remove_method`**: Remove an instance-side or class-side method
+- **`remove_class`**: Remove a class from the image
 
 #### UI Debugging
 
